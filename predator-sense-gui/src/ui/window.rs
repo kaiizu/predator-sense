@@ -1,9 +1,9 @@
 use gtk4::prelude::*;
 use gtk4::{self as gtk, gio, glib};
 use libadwaita as adw;
+use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::f64::consts::PI;
 use std::rc::Rc;
 
 use crate::config;
@@ -27,74 +27,19 @@ const SUSPENDED_PROPERTY: &str = "suspended";
 
 pub fn build(app: &adw::Application) {
     crate::startup_mark("window build start");
-    let window = gtk::ApplicationWindow::builder()
+    // libadwaita window. `AdwApplicationWindow` is a `GtkApplicationWindow`
+    // subclass that understands `AdwToolbarView`/`AdwHeaderBar`, so titlebar,
+    // CSD and window controls are the platform's job now. The hand-drawn
+    // header this used to carry (brand mark, fake minimize/close buttons,
+    // neon edge bars) is gone.
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Predator Sense")
-        // The actual mapped window ends up default_width+122 (fixed CSD/chrome
-        // overhead) x max(default_height, ~1172 - the sidebar+dashboard
-        // content's natural height floor, which default_height alone cannot
-        // go below). Values picked so the window opens at a consistent
-        // 1482x1172 every time - as close to the requested 1482x1126 as the
-        // content's own minimum allows.
-        .default_width(1360)
-        .default_height(1172)
+        .default_width(1200)
+        .default_height(820)
         .resizable(true)
-        .decorated(true)
         .build();
     window.connect_map(|_| crate::startup_mark("window mapped"));
-    window.add_css_class("main-window");
-
-    // === TOP BAR (custom header) ===
-    let header = gtk::HeaderBar::new();
-    header.add_css_class("custom-headerbar");
-    header.set_show_title_buttons(false); // We draw our own
-
-    // Left: brand mark + PREDATOR
-    let brand_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let brand_mark = gtk::DrawingArea::new();
-    brand_mark.set_size_request(24, 24);
-    brand_mark.set_draw_func(|_a, cr, w, h| draw_brand_mark(cr, w as f64, h as f64));
-    let brand_text = gtk::Label::new(Some("PREDATOR"));
-    brand_text.add_css_class("header-brand");
-    brand_box.append(&brand_mark);
-    brand_box.append(&brand_text);
-    header.pack_start(&brand_box);
-
-    // Center: PredatorSense
-    let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let title_p = gtk::Label::new(Some("Predator"));
-    title_p.add_css_class("header-title-label");
-    let title_s = gtk::Label::new(Some("Sense"));
-    title_s.add_css_class("header-title-sense");
-    title_box.append(&title_p);
-    title_box.append(&title_s);
-    header.set_title_widget(Some(&title_box));
-
-    // Right: icon buttons (settings, minimize, close) drawn as simple labels
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let btn_minimize = gtk::Button::with_label("—");
-    btn_minimize.add_css_class("window-ctrl-btn");
-    let win_c = window.clone();
-    btn_minimize.connect_clicked(move |_| win_c.minimize());
-
-    let btn_close = gtk::Button::with_label("✕");
-    btn_close.add_css_class("window-ctrl-btn");
-    let win_c2 = window.clone();
-    let app_c = app.clone();
-    btn_close.connect_clicked(move |_| {
-        let cfg = config::load_app_config();
-        if cfg.minimize_on_close {
-            hide_to_tray(&win_c2, &app_c);
-        } else {
-            win_c2.close();
-        }
-    });
-
-    controls.append(&btn_minimize);
-    controls.append(&btn_close);
-    header.pack_end(&controls);
-
-    window.set_titlebar(Some(&header));
 
     // Check module status
     let module_status = setup::check_status();
@@ -105,7 +50,7 @@ pub fn build(app: &adw::Application) {
     ) {
         build_main_ui(app, &window);
     } else {
-        build_with_setup(app, &window, &header);
+        build_with_setup(app, &window);
     }
     crate::startup_mark("window content built");
 
@@ -189,6 +134,12 @@ pub fn build(app: &adw::Application) {
     // (Russian, German) can need more room than a small window leaves.
     // Maximized gives every language the most space the screen has, rather
     // than papering over the same layouts at one fixed default size.
+    // Opens maximized every time, exactly as before this rewrite: several
+    // pages (Lighting's four zones, Mode's cards, Settings' rows) are wider
+    // than a small window and only scroll vertically. On a tiling WM the
+    // alternative is whatever tile the compositor hands out, which clips
+    // them - maximized gives every language and every page the most space
+    // the screen has.
     window.maximize();
     window.present();
     crate::startup_mark("window present called");
@@ -239,27 +190,24 @@ fn hide_to_tray<W: IsA<gtk::Widget>>(win: &W, app: &adw::Application) {
     eprintln!("[close] janela escondida, tray iniciado");
 }
 
-fn build_with_setup(
-    app: &adw::Application,
-    window: &gtk::ApplicationWindow,
-    _header: &gtk::HeaderBar,
-) {
-    let main_stack = gtk::Stack::new();
-    main_stack.set_transition_type(gtk::StackTransitionType::SlideLeft);
+fn build_with_setup(app: &adw::Application, window: &adw::ApplicationWindow) {
+    // Once the wizard finishes, the window's whole content is replaced by the
+    // real UI (the wizard used to be one page of a stack that build_main_ui
+    // later appended to).
     let app_c = app.clone();
     let window_c = window.clone();
-    let main_stack_c = main_stack.clone();
     let on_complete: Rc<dyn Fn()> = Rc::new(move || {
-        let main_ui = build_main_content(&app_c, &window_c);
-        main_stack_c.add_named(&main_ui, Some("main"));
-        main_stack_c.set_visible_child_name("main");
+        build_main_ui(&app_c, &window_c);
     });
     let setup = setup_page::build(on_complete);
-    main_stack.add_named(&setup, Some("setup"));
-    window.set_child(Some(&main_stack));
+
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&adw::HeaderBar::new());
+    toolbar_view.set_content(Some(&setup));
+    window.set_content(Some(&toolbar_view));
 }
 
-fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
+fn build_main_ui(app: &adw::Application, window: &adw::ApplicationWindow) {
     let main_content = build_main_content(app, window);
 
     // Background watcher: critical-temperature alerts + auto power profile.
@@ -379,7 +327,7 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
             let elapsed = minutes_since_check.get() + 1;
             if elapsed >= cfg.ai_check_interval_min.max(1) {
                 minutes_since_check.set(0);
-                ai_page::run_periodic_check(&window_c);
+                ai_page::run_periodic_check(window_c.upcast_ref());
             } else {
                 minutes_since_check.set(elapsed);
             }
@@ -457,157 +405,41 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
         });
     }
 
-    // Wrap in overlay with neon edge bars drawn on top
-    let root_overlay = gtk::Overlay::new();
-    root_overlay.set_child(Some(&main_content));
-
-    // Two slim edge-hugging DrawingAreas instead of one full-window overlay:
-    // the pulse timer below re-rasterizes whatever surface it invalidates,
-    // and at full-window size that meant a window-sized cairo software pass
-    // 5x/second forever — one of the issue #13 idle-CPU culprits. 32 px
-    // covers the 4 px core bar plus the widest glow layer (10 px outward,
-    // clipped by the window edge exactly like before, and 14 px inward), so
-    // the result is pixel-identical to the old full-window draw.
-    let pulse_phase: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
-    let mut neon_bars = Vec::new();
-    for left in [true, false] {
-        let bar = gtk::DrawingArea::new();
-        bar.set_content_width(32);
-        bar.set_vexpand(true);
-        bar.set_halign(if left {
-            gtk::Align::Start
-        } else {
-            gtk::Align::End
-        });
-        bar.set_can_target(false);
-        let phase = pulse_phase.clone();
-        bar.set_draw_func(move |_a, cr, w, h| {
-            draw_neon_bar(cr, w as f64, h as f64, *phase.borrow(), left);
-        });
-        root_overlay.add_overlay(&bar);
-        neon_bars.push(bar);
-    }
-
-    // Animate at ~5fps. The neon edge is a slow background pulse — full 60fps
-    // here was visually identical but burned ~30% CPU drawing layered Cairo
-    // strokes on every redraw cycle of the entire window.
-    let phase_c = pulse_phase.clone();
-    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        if !crate::app_state::is_window_visible() {
-            return glib::ControlFlow::Continue;
-        }
-        let mut p = phase_c.borrow_mut();
-        *p += 0.12;
-        if *p > 1.0 {
-            *p -= 1.0;
-        }
-        drop(p);
-        for bar in &neon_bars {
-            bar.queue_draw();
-        }
-        glib::ControlFlow::Continue
-    });
-
-    window.set_child(Some(&root_overlay));
+    window.set_content(Some(&main_content));
 }
 
 type PageBuilder = Box<dyn FnOnce() -> gtk::Widget>;
 type PendingPages = Rc<RefCell<HashMap<String, PageBuilder>>>;
 
-fn ensure_page_built(stack: &gtk::Stack, pending: &PendingPages, name: &str) {
-    if stack.child_by_name(name).is_some() {
-        return;
-    }
+/// Builds a page on first navigation.
+///
+/// The builder lives in `pending` until it has run once, so "still in
+/// `pending`" is the not-built-yet marker: no need to ask the stack, and it
+/// stays correct when a page (see the temperatures timer) is replaced later.
+fn ensure_page_built(stack: &adw::ViewStack, pending: &PendingPages, name: &str, title: &str) {
     // Remove first so the RefCell borrow is released before the builder runs;
     // page constructors can register callbacks that immediately touch GTK.
     let builder = pending.borrow_mut().remove(name);
-    if let Some(builder) = builder {
-        let page = builder();
-        stack.add_named(&page, Some(name));
-        crate::startup_mark(&format!("lazy page: {name}"));
-    }
+    let Some(builder) = builder else {
+        return;
+    };
+    let page = builder();
+    stack.add_titled(&page, Some(name), title);
+    crate::startup_mark(&format!("lazy page: {name}"));
 }
 
-/// Build main area matching nova-ui.html: main-area with padding, sidebar + content-panel
-fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -> gtk::Overlay {
-    // Main area overlay (for the diagonal stripe background)
-    let main_overlay = gtk::Overlay::new();
-    main_overlay.set_hexpand(true);
-    main_overlay.set_vexpand(true);
-
-    // Background recovered from the visual-redesign POC (Claude Design
-    // canvas, 2026-09-07, our own design - discarded overall, but the user
-    // liked this specific background and asked to bring it into the real
-    // app): a near-black vertical gradient, a soft cyan glow anchored just
-    // above the top-left corner, and a faint 34px technical grid on top.
-    // This replaces the previous diagonal-stripe Cairo background - not a
-    // CSS rule, because this DrawingArea (not `.content-panel`, which turned
-    // out to be dead CSS no widget ever applied) is what actually paints
-    // behind the whole sidebar+content layout.
-    let stripe_bg = gtk::DrawingArea::new();
-    stripe_bg.set_hexpand(true);
-    stripe_bg.set_vexpand(true);
-    stripe_bg.set_draw_func(|_a, cr, w, h| {
-        let wf = w as f64;
-        let hf = h as f64;
-
-        // Base vertical gradient: #060a0e at top to #05070a at bottom.
-        let base = gtk4::cairo::LinearGradient::new(0.0, 0.0, 0.0, hf);
-        base.add_color_stop_rgb(0.0, 6.0 / 255.0, 10.0 / 255.0, 14.0 / 255.0);
-        base.add_color_stop_rgb(1.0, 5.0 / 255.0, 7.0 / 255.0, 10.0 / 255.0);
-        let _ = cr.set_source(&base);
-        cr.rectangle(0.0, 0.0, wf, hf);
-        let _ = cr.fill();
-
-        // Soft cyan glow centered just above the top-left corner (18%, -8%
-        // of the panel), fading out by 60% of its own radius.
-        let cx = wf * 0.18;
-        let cy = hf * -0.08;
-        let radius = wf.max(hf) * 0.85;
-        let glow = gtk4::cairo::RadialGradient::new(cx, cy, 0.0, cx, cy, radius);
-        glow.add_color_stop_rgba(0.0, 0.0, 0.831, 0.941, 0.07);
-        glow.add_color_stop_rgba(0.6, 0.0, 0.831, 0.941, 0.0);
-        glow.add_color_stop_rgba(1.0, 0.0, 0.831, 0.941, 0.0);
-        let _ = cr.set_source(&glow);
-        cr.rectangle(0.0, 0.0, wf, hf);
-        let _ = cr.fill();
-
-        // Fine 34px grid, discreet on purpose - same alpha as the POC.
-        cr.set_source_rgba(148.0 / 255.0, 177.0 / 255.0, 184.0 / 255.0, 0.05);
-        cr.set_line_width(1.0);
-        let mut x = 0.5;
-        while x < wf {
-            cr.move_to(x, 0.0);
-            cr.line_to(x, hf);
-            let _ = cr.stroke();
-            x += 34.0;
-        }
-        let mut y = 0.5;
-        while y < hf {
-            cr.move_to(0.0, y);
-            cr.line_to(wf, y);
-            let _ = cr.stroke();
-            y += 34.0;
-        }
-    });
-    main_overlay.set_child(Some(&stripe_bg));
-
-    // Layout box with padding 30px 40px and gap 20px (matching .main-area)
-    let layout = gtk::Box::new(gtk::Orientation::Horizontal, 20);
-    layout.set_margin_top(30);
-    layout.set_margin_bottom(30);
-    layout.set_margin_start(40);
-    layout.set_margin_end(40);
-
-    // === SIDEBAR (width set below, once the labels for the active
-    // language are known; gap 10px) ===
-    let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    sidebar.set_hexpand(false);
-    sidebar.set_valign(gtk::Align::Start);
-
-    // Pages stack
-    let stack = gtk::Stack::new();
-    stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+/// Builds the main window body: an `AdwNavigationSplitView` whose sidebar is
+/// a `.navigation-sidebar` `GtkListBox` (the list style GNOME's own apps use)
+/// and whose content is an `AdwViewStack` with one page per entry.
+///
+/// Page builders, the lazy-build registry, the background watchers and the
+/// temperatures refresh all keep working exactly as they did under the
+/// previous hand-drawn shell - only the chrome around them changed.
+fn build_main_content(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+) -> adw::NavigationSplitView {
+    let stack = adw::ViewStack::new();
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     // Homogeneous sizing (the GTK default) makes the window's minimum size
@@ -620,7 +452,7 @@ fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -
 
     let dashboard = dashboard_page::build();
     crate::startup_mark("dashboard page");
-    stack.add_named(&dashboard, Some("home"));
+    stack.add_titled(&dashboard, Some("home"), &crate::i18n::t("home_page"));
 
     // GTK widgets must be created on the main thread, but invisible pages do
     // not need to exist before the first frame. Build each page once, on its
@@ -660,14 +492,9 @@ fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -
             "drivers".into(),
             Box::new(|| drivers_page::build().upcast()),
         );
-        // GameSync, Macros and the AI assistant used to be their own
-        // top-level entries here, each reachable as a separate named page.
-        // They moved under one "Tools" hub (`tools_page.rs`, tab bar over a
-        // `gtk::Stack`, same pattern as `usage_page.rs`) once the sidebar
-        // started growing without an obvious ceiling - each tool's build()
-        // call lives inside that page now, still lazy (only runs the first
-        // time "tools" itself is visited), just no longer three separate
-        // entries here.
+        // GameSync, Macros and the AI assistant live under one "Tools" hub
+        // (`tools_page.rs`); each tool's build() call runs inside that page,
+        // still lazy (only on the first visit to "tools" itself).
         let window_weak = window.downgrade();
         pages.insert(
             "tools".into(),
@@ -675,7 +502,7 @@ fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -
                 let window = window_weak
                     .upgrade()
                     .expect("lazy Tools page is built only while its window exists");
-                tools_page::build(&window).upcast()
+                tools_page::build(window.upcast_ref()).upcast()
             }),
         );
         let app_weak = app.downgrade();
@@ -702,213 +529,94 @@ fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -
         (crate::i18n::t("battery"), "battery"),
         (crate::i18n::t("gpu_menu"), "gpu"),
         (crate::i18n::t("monitoring"), "monitor"),
-        // GameSync, Macros and the AI assistant used to be their own
-        // sidebar rows - moved under this one "Tools" hub (a card grid,
-        // `tools_page.rs`) once the sidebar started growing without an
-        // obvious ceiling. Their `pending` page-builder entries above are
-        // unchanged, still built lazily on first visit - only how you get
-        // to them changed.
         (crate::i18n::t("tools_nav"), "tools"),
         (crate::i18n::t("drivers_and_manuals"), "drivers"),
         (crate::i18n::t("settings"), "settings"),
     ];
+    let nav: Rc<Vec<(String, String)>> = Rc::new(
+        nav_items
+            .iter()
+            .map(|(label, name)| (label.to_string(), name.to_string()))
+            .collect(),
+    );
 
-    // 200px was sized against Portuguese/English labels; a language with
-    // longer words (Russian "Управление вентиляторами" for Fan Control,
-    // nearly twice as wide as any Portuguese label here) overflowed past
-    // it. Measured for real instead of guessed at a wider fixed number,
-    // against the bold weight (the active-row state, always at least as
-    // wide as the regular one) so every label - present and any future
-    // translation - gets exactly the room its own text needs, not a number
-    // picked for today's nine languages.
-    let sidebar_width = nav_sidebar_width(&sidebar, nav_items.iter().map(|(label, _)| *label));
-    sidebar.set_size_request(sidebar_width, -1);
+    // === SIDEBAR ===
+    let list = gtk::ListBox::new();
+    list.add_css_class("navigation-sidebar");
+    list.set_selection_mode(gtk::SelectionMode::Single);
+    for (label, _) in &nav_items {
+        let row = gtk::ListBoxRow::new();
+        let lbl = gtk::Label::new(Some(label));
+        lbl.set_halign(gtk::Align::Start);
+        lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        lbl.set_margin_start(12);
+        lbl.set_margin_end(12);
+        lbl.set_margin_top(8);
+        lbl.set_margin_bottom(8);
+        row.set_child(Some(&lbl));
+        list.append(&row);
+    }
 
-    let active_idx: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-    let nav_widgets: Rc<RefCell<Vec<(gtk::DrawingArea, gtk::Label)>>> =
-        Rc::new(RefCell::new(Vec::new()));
-
-    // Shared by every item's click handler AND the Up/Down key navigation
-    // added below - both just need to land on the same index. nav_widgets
-    // is read lazily (through the Rc<RefCell<..>>) so this can be built
-    // before the loop below has populated it.
-    let page_names: Rc<Vec<String>> =
-        Rc::new(nav_items.iter().map(|(_, name)| name.to_string()).collect());
+    // Row selection is the single navigation path: clicking a row selects it
+    // (the list also handles Up/Down once it has focus), and programmatic
+    // navigation selects the row too, so the highlight and the visible page
+    // cannot drift apart.
     let navigate_to: Rc<dyn Fn(usize)> = {
         let stack_c = stack.clone();
         let pending_c = pending.clone();
-        let active_c = active_idx.clone();
-        let widgets_c = nav_widgets.clone();
-        let page_names_c = page_names.clone();
+        let list_c = list.clone();
+        let nav_c = nav.clone();
         Rc::new(move |idx: usize| {
-            let Some(page) = page_names_c.get(idx) else {
+            let Some((label, name)) = nav_c.get(idx) else {
                 return;
             };
-            *active_c.borrow_mut() = idx;
-            ensure_page_built(&stack_c, &pending_c, page);
-            stack_c.set_visible_child_name(page);
-            for (j, (bg_da, lbl_w)) in widgets_c.borrow().iter().enumerate() {
-                bg_da.queue_draw();
-                lbl_w.remove_css_class("nav-label-active");
-                lbl_w.remove_css_class("nav-label");
-                lbl_w.add_css_class(if j == idx {
-                    "nav-label-active"
-                } else {
-                    "nav-label"
-                });
+            ensure_page_built(&stack_c, &pending_c, name, label);
+            stack_c.set_visible_child_name(name);
+            if let Some(row) = list_c.row_at_index(idx as i32) {
+                if list_c.selected_row().as_ref() != Some(&row) {
+                    list_c.select_row(Some(&row));
+                }
             }
         })
     };
-
-    for (i, (label, page_name)) in nav_items.iter().enumerate() {
-        let item_overlay = gtk::Overlay::new();
-
-        // Cairo-drawn background with clip-path
-        let bg = gtk::DrawingArea::new();
-        bg.set_size_request(sidebar_width, 40);
-        let active_idx_c = active_idx.clone();
-        let idx = i;
-        bg.set_draw_func(move |_a, cr, w, h| {
-            draw_menu_item(cr, w as f64, h as f64, *active_idx_c.borrow() == idx);
-        });
-        item_overlay.set_child(Some(&bg));
-
-        // Label overlay
-        let lbl = gtk::Label::new(Some(label));
-        lbl.set_halign(gtk::Align::Start);
-        lbl.set_margin_start(NAV_LABEL_START_MARGIN);
-        // Belt-and-suspenders: the sidebar is sized to fit every label's
-        // real measured width above, so this should never actually trigger
-        // - kept anyway so a future translation this was not measured
-        // against degrades to "…" instead of visibly overflowing past the
-        // item's own background.
-        lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        if i == 0 {
-            lbl.add_css_class("nav-label-active");
-        } else {
-            lbl.add_css_class("nav-label");
-        }
-        item_overlay.add_overlay(&lbl);
-
-        // Click
-        let gesture = gtk::GestureClick::new();
-        let navigate_to_c = navigate_to.clone();
-        gesture.connect_released(move |_, _, _, _| {
-            navigate_to_c(idx);
-        });
-        item_overlay.add_controller(gesture);
-
-        nav_widgets.borrow_mut().push((bg.clone(), lbl.clone()));
-        sidebar.append(&item_overlay);
-    }
-
-    // Up/Down anywhere in the window move the sidebar selection by one,
-    // same as clicking the item above/below the current one - lets
-    // screenshot-automation (and anyone else) drive the whole sidebar from
-    // the keyboard instead of needing exact per-item pixel coordinates,
-    // which drift with window size/placement in a way mouse clicks can't
-    // route around. Capture phase so it fires before any focused child
-    // widget (e.g. a page's own entry/slider) would otherwise eat the key.
-    let key_controller = gtk::EventControllerKey::new();
-    key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
-        let active_for_key = active_idx.clone();
-        let navigate_to_key = navigate_to.clone();
-        let count = page_names.len();
-        key_controller.connect_key_pressed(move |_, keyval, _, _| match keyval {
-            gtk::gdk::Key::Down => {
-                let cur = *active_for_key.borrow();
-                navigate_to_key((cur + 1).min(count - 1));
-                glib::Propagation::Stop
+        let navigate_c = navigate_to.clone();
+        list.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                navigate_c(row.index() as usize);
             }
-            gtk::gdk::Key::Up => {
-                let cur = *active_for_key.borrow();
-                navigate_to_key(cur.saturating_sub(1));
-                glib::Propagation::Stop
-            }
-            _ => glib::Propagation::Proceed,
         });
     }
-    window.add_controller(key_controller);
 
-    // Spacer to push info to bottom
-    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    spacer.set_vexpand(true);
-    sidebar.append(&spacer);
+    let sidebar_scroll = gtk::ScrolledWindow::new();
+    sidebar_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    sidebar_scroll.set_vexpand(true);
+    sidebar_scroll.set_child(Some(&list));
 
-    // Bottom: laptop image + model info + status
-    let info_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    info_box.set_halign(gtk::Align::Center);
-
+    // Model / version / module status, pinned under the list.
+    let status_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    status_box.set_margin_top(6);
+    status_box.set_margin_bottom(12);
+    status_box.set_halign(gtk::Align::Center);
     let model_name = std::fs::read_to_string("/sys/class/dmi/id/product_name")
         .unwrap_or_else(|_| "Predator".into());
-
-    // Laptop thumbnail
-    let laptop_path = find_model_photo(model_name.trim())
-        .or_else(|| find_resource("models/notebook-404.png"))
-        .or_else(|| find_resource("laptop-thumb.png"));
-    if let Some(path) = laptop_path {
-        let pic = gtk::Picture::for_filename(path);
-        pic.set_size_request(100, 66);
-        pic.set_can_shrink(true);
-        pic.set_halign(gtk::Align::Center);
-        pic.set_valign(gtk::Align::Center);
-        info_box.append(&pic);
-    }
     let model = gtk::Label::new(Some(model_name.trim()));
     model.add_css_class("info-text");
-    model.set_halign(gtk::Align::Center);
-    info_box.append(&model);
-
+    status_box.append(&model);
     let ver = gtk::Label::new(Some(&format!("v{} • Linux", env!("CARGO_PKG_VERSION"))));
     ver.add_css_class("info-text-dim");
-    ver.set_halign(gtk::Align::Center);
-    info_box.append(&ver);
-
-    // Status dot (pulsing green)
+    status_box.append(&ver);
     let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     status_row.set_halign(gtk::Align::Center);
     status_row.set_margin_top(4);
+    let module_loaded = rgb::is_module_loaded();
     let dot = gtk::Label::new(Some("●"));
-    dot.add_css_class(if rgb::is_module_loaded() {
-        "status-dot-pulse"
+    dot.add_css_class(if module_loaded {
+        "status-dot-on"
     } else {
         "status-dot-off"
     });
-
-    // Discrete 5 fps timer pulses the status dot's opacity in place of a CSS
-    // `animation: infinite`: an infinite CSS animation on an always-mapped
-    // widget pins the GTK frame clock at panel refresh rate, re-rasterizing
-    // the window's cairo nodes in software nonstop - measured at ~84% of a
-    // core with the app idle on a 165 Hz panel (issue #13). A discrete 5 fps
-    // sine is visually equivalent for a pulse this slow and lets the frame
-    // clock go fully idle between ticks. Used to also pulse the sidebar's
-    // AI "BETA" badge the same way, back when AI had its own sidebar row -
-    // that badge lives on its Tools-hub card now (`tools_page.rs`), static,
-    // no shared timer needed for just the one spot.
-    {
-        let dot_pulses = rgb::is_module_loaded();
-        let dot_c = dot.clone();
-        let phase: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.0));
-        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            if !crate::app_state::is_window_visible() {
-                return glib::ControlFlow::Continue;
-            }
-            let mut p = phase.borrow_mut();
-            *p += 0.1;
-            if *p > 1.0 {
-                *p -= 1.0;
-            }
-            let wave = ((*p * 2.0 * PI).sin() + 1.0) / 2.0;
-            drop(p);
-            if dot_pulses {
-                // Same 2 s bright↔dim cycle the CSS keyframes had.
-                dot_c.set_opacity(0.45 + 0.55 * wave);
-            }
-            glib::ControlFlow::Continue
-        });
-    }
-    let st = gtk::Label::new(Some(crate::i18n::t(if rgb::is_module_loaded() {
+    let st = gtk::Label::new(Some(crate::i18n::t(if module_loaded {
         "module_active"
     } else {
         "module_inactive"
@@ -916,79 +624,71 @@ fn build_main_content(app: &adw::Application, window: &gtk::ApplicationWindow) -
     st.add_css_class("info-text-dim");
     status_row.append(&dot);
     status_row.append(&st);
-    info_box.append(&status_row);
+    status_box.append(&status_row);
 
-    sidebar.append(&info_box);
+    let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sidebar_content.append(&sidebar_scroll);
+    sidebar_content.append(&status_box);
 
-    layout.append(&sidebar);
+    let sidebar_view = adw::ToolbarView::new();
+    sidebar_view.add_top_bar(&adw::HeaderBar::new());
+    sidebar_view.set_content(Some(&sidebar_content));
+    let sidebar_page = adw::NavigationPage::new(&sidebar_view, "Predator Sense");
 
-    // === CONTENT PANEL WRAPPER (polygon border + inner) ===
-    let panel_wrapper = gtk::Overlay::new();
-    panel_wrapper.set_hexpand(true);
-    panel_wrapper.set_vexpand(true);
+    // === CONTENT ===
+    let title = adw::WindowTitle::new(&crate::i18n::t("home_page"), "");
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&title));
+    {
+        let title_c = title.clone();
+        stack.connect_visible_child_notify(move |s| {
+            let label = s
+                .visible_child()
+                .and_then(|child| s.page(&child).title())
+                .map(|t| t.to_string())
+                .unwrap_or_default();
+            title_c.set_title(&label);
+        });
+    }
 
-    // Gradient polygon border background
-    let border_bg = gtk::DrawingArea::new();
-    border_bg.set_hexpand(true);
-    border_bg.set_vexpand(true);
-    border_bg.set_draw_func(|_a, cr, w, h| draw_panel_border(cr, w as f64, h as f64));
-    panel_wrapper.set_child(Some(&border_bg));
+    let content_view = adw::ToolbarView::new();
+    content_view.add_top_bar(&header);
+    content_view.set_content(Some(&stack));
+    let content_page = adw::NavigationPage::new(&content_view, "Predator Sense");
 
-    // Content directly in the panel (no scrollbar on home)
-    let content_wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content_wrapper.set_margin_top(2);
-    content_wrapper.set_margin_bottom(2);
-    content_wrapper.set_margin_start(2);
-    content_wrapper.set_margin_end(2);
-    content_wrapper.set_hexpand(true);
-    content_wrapper.set_vexpand(true);
+    let split = adw::NavigationSplitView::new();
+    split.set_sidebar(Some(&sidebar_page));
+    split.set_content(Some(&content_page));
 
-    stack.set_hexpand(true);
-    stack.set_vexpand(true);
-    content_wrapper.append(&stack);
-
-    panel_wrapper.add_overlay(&content_wrapper);
-    layout.append(&panel_wrapper);
-
-    main_overlay.add_overlay(&layout);
+    // Land on the first page, with its row highlighted.
+    navigate_to(0);
 
     // Refresh periódico da página de temperaturas (gauges precisam recalcular).
     // Gated por visibilidade do window e da aba — evita rebuild quando no tray.
-    let stack_c = stack.clone();
-    glib::timeout_add_seconds_local(2, move || {
-        if !crate::app_state::is_window_visible() {
-            return glib::ControlFlow::Continue;
-        }
-        if stack_c.visible_child_name().as_deref() == Some("temperatures") {
-            let s = sensors::read_all_sensors();
-            let new_temps = temperatures_page::build(&s);
-            if let Some(old) = stack_c.child_by_name("temperatures") {
-                stack_c.remove(&old);
+    {
+        let stack_c = stack.clone();
+        glib::timeout_add_seconds_local(2, move || {
+            if !crate::app_state::is_window_visible() {
+                return glib::ControlFlow::Continue;
             }
-            stack_c.add_named(&new_temps, Some("temperatures"));
-            stack_c.set_visible_child_name("temperatures");
-        }
-        glib::ControlFlow::Continue
-    });
-
-    main_overlay
-}
-
-fn find_model_photo(product_name: &str) -> Option<String> {
-    let dir = find_resource_path("models")?;
-    let entries = std::fs::read_dir(&dir).ok()?;
-    let product_lower = product_name.to_lowercase();
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
-        let Some(code) = name.rsplit_once('.').map(|(base, _)| base) else {
-            continue;
-        };
-        if product_lower.contains(&code.to_lowercase()) {
-            return Some(entry.path().to_string_lossy().to_string());
-        }
+            if stack_c.visible_child_name().as_deref() == Some("temperatures") {
+                let s = sensors::read_all_sensors();
+                let new_temps = temperatures_page::build(&s);
+                if let Some(old) = stack_c.child_by_name("temperatures") {
+                    stack_c.remove(&old);
+                }
+                stack_c.add_titled(
+                    &new_temps,
+                    Some("temperatures"),
+                    &crate::i18n::t("temperatures"),
+                );
+                stack_c.set_visible_child_name("temperatures");
+            }
+            glib::ControlFlow::Continue
+        });
     }
-    None
+
+    split
 }
 
 pub(crate) fn find_resource(name: &str) -> Option<String> {
@@ -1014,99 +714,6 @@ fn find_resource_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Draw pulsing cyan neon glow bars on left and right edges
-/// phase: 0.0 to 1.0, controls the pulse intensity
-/// Draw one neon edge bar (left or right) inside its own slim DrawingArea.
-/// Geometry matches the old full-window draw_neon_edges() exactly, just
-/// expressed in the slim area's local coordinates.
-fn draw_neon_bar(cr: &gtk4::cairo::Context, w: f64, h: f64, phase: f64, left: bool) {
-    // Smooth sine pulse: oscillates between 0.4 and 1.0
-    let pulse = 0.4 + 0.6 * ((phase * 2.0 * PI).sin() * 0.5 + 0.5);
-    let (r, g, b) = crate::ui::brand_theme::accent().bright;
-
-    let bar_width = 4.0;
-    let top = h * 0.10;
-    let bottom = h * 0.90;
-    let bar_h = bottom - top;
-    let radius = 5.0;
-    let x0 = if left { 0.0 } else { w - bar_width };
-
-    // Glow layers (pulsing)
-    for i in 0..5 {
-        let spread = (i as f64 + 1.0) * 4.0;
-        let alpha = (0.15 / (i as f64 + 1.0)) * pulse;
-        cr.set_source_rgba(r, g, b, alpha);
-        rounded_rect(
-            cr,
-            x0 - spread / 2.0,
-            top - spread / 2.0,
-            bar_width + spread,
-            bar_h + spread,
-            radius + spread / 2.0,
-        );
-        let _ = cr.fill();
-    }
-    // Core bar
-    cr.set_source_rgba(r, g, b, 0.5 + 0.4 * pulse);
-    rounded_rect(cr, x0, top, bar_width, bar_h, radius);
-    let _ = cr.fill();
-
-    // Subtle edge border (also pulses slightly)
-    let ex = if left { 1.0 } else { w - 1.0 };
-    cr.set_source_rgba(r, g, b, 0.15 + 0.2 * pulse);
-    cr.set_line_width(2.0);
-    cr.move_to(ex, 0.0);
-    cr.line_to(ex, h);
-    let _ = cr.stroke();
-}
-
-/// Helper: draw a rounded rectangle path
-fn rounded_rect(cr: &gtk4::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    cr.new_sub_path();
-    cr.arc(x + w - r, y + r, r, -PI / 2.0, 0.0);
-    cr.arc(x + w - r, y + h - r, r, 0.0, PI / 2.0);
-    cr.arc(x + r, y + h - r, r, PI / 2.0, PI);
-    cr.arc(x + r, y + r, r, PI, 3.0 * PI / 2.0);
-    cr.close_path();
-}
-
-/// Left margin the nav label overlay already uses (`lbl.set_margin_start`),
-/// plus breathing room on the right so the widest label's text never
-/// touches the item's own right edge.
-const NAV_LABEL_START_MARGIN: i32 = 15;
-const NAV_LABEL_END_PADDING: i32 = 20;
-/// Never narrower than this, even for a hypothetical language whose longest
-/// label came out unexpectedly short - keeps the sidebar from looking
-/// cramped relative to the rest of the chrome.
-const NAV_SIDEBAR_MIN_WIDTH: i32 = 170;
-
-/// Real measured width of the widest label in `labels`, at the "Predator"
-/// font's bold weight (the active-row state - always at least as wide as
-/// the same text at the regular 400 weight `.nav-label` uses), plus this
-/// sidebar's own left/right padding. `widget` only lends its display to
-/// resolve the font; it does not need to be realized or on screen yet -
-/// `Widget::pango_context()` falls back to the default display otherwise.
-fn nav_sidebar_width<'a>(
-    widget: &impl IsA<gtk::Widget>,
-    labels: impl Iterator<Item = &'a str>,
-) -> i32 {
-    let context = widget.pango_context();
-    let mut font = gtk4::pango::FontDescription::new();
-    font.set_family("Predator");
-    font.set_size(13 * gtk4::pango::SCALE);
-    font.set_weight(gtk4::pango::Weight::Bold);
-    let widest = labels
-        .map(|label| {
-            let layout = gtk4::pango::Layout::new(&context);
-            layout.set_font_description(Some(&font));
-            layout.set_text(label);
-            layout.pixel_size().0
-        })
-        .max()
-        .unwrap_or(0);
-    (widest + NAV_LABEL_START_MARGIN + NAV_LABEL_END_PADDING).max(NAV_SIDEBAR_MIN_WIDTH)
-}
-
 /// Marks `widget` and every descendant (children, grandchildren, ...) as
 /// needing to redraw. `Widget::queue_draw` alone only invalidates the one
 /// widget it is called on - GTK4 caches each widget's own render node and
@@ -1121,107 +728,6 @@ fn queue_draw_recursive(widget: &gtk::Widget) {
         queue_draw_recursive(&w);
         child = w.next_sibling();
     }
-}
-
-/// Draw menu item with clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px)
-fn draw_menu_item(cr: &gtk4::cairo::Context, w: f64, h: f64, is_active: bool) {
-    let cut = 10.0;
-
-    cr.move_to(cut, 0.0);
-    cr.line_to(w, 0.0);
-    cr.line_to(w, h);
-    cr.line_to(0.0, h);
-    cr.line_to(0.0, cut);
-    cr.close_path();
-
-    let accent = crate::ui::brand_theme::accent();
-    if is_active {
-        // Gradient bright accent -> dark accent + glow
-        let (br, bg, bb) = accent.bright;
-        let (dr, dg, db) = accent.dark;
-        let grad = gtk4::cairo::LinearGradient::new(0.0, 0.0, w, 0.0);
-        grad.add_color_stop_rgb(0.0, br, bg, bb);
-        grad.add_color_stop_rgb(1.0, dr, dg, db);
-        cr.set_source(&grad).unwrap();
-        let _ = cr.fill();
-    } else {
-        // Fill rgba(20,20,20,0.8)
-        cr.set_source_rgba(0.078, 0.078, 0.078, 0.8);
-        let _ = cr.fill_preserve();
-
-        // Border 1px #222
-        cr.set_source_rgb(0.133, 0.133, 0.133);
-        cr.set_line_width(1.0);
-        let _ = cr.stroke();
-
-        // Left border 2px, dark accent
-        let (dr, dg, db) = accent.dark;
-        cr.set_source_rgb(dr, dg, db);
-        cr.set_line_width(2.0);
-        cr.move_to(1.0, cut);
-        cr.line_to(1.0, h);
-        let _ = cr.stroke();
-    }
-}
-
-/// Draw content panel polygon gradient border
-fn draw_panel_border(cr: &gtk4::cairo::Context, w: f64, h: f64) {
-    let cut = 15.0;
-
-    // Outer polygon
-    cr.move_to(cut, 0.0);
-    cr.line_to(w, 0.0);
-    cr.line_to(w, h - cut);
-    cr.line_to(w - cut, h);
-    cr.line_to(0.0, h);
-    cr.line_to(0.0, cut);
-    cr.close_path();
-
-    let (r, g, b) = crate::ui::brand_theme::accent().bright;
-    let grad = gtk4::cairo::LinearGradient::new(0.0, 0.0, w, h);
-    grad.add_color_stop_rgba(0.0, r, g, b, 0.5);
-    grad.add_color_stop_rgba(0.5, r, g, b, 0.1);
-    grad.add_color_stop_rgba(1.0, 0.067, 0.067, 0.067, 1.0);
-    cr.set_source(&grad).unwrap();
-    let _ = cr.fill();
-
-    // Inner polygon (1px inset = border width)
-    let i = 1.0;
-    cr.move_to(cut + i, i);
-    cr.line_to(w - i, i);
-    cr.line_to(w - i, h - cut - i);
-    cr.line_to(w - cut - i, h - i);
-    cr.line_to(i, h - i);
-    cr.line_to(i, cut + i);
-    cr.close_path();
-    cr.set_source_rgb(0.067, 0.067, 0.067);
-    let _ = cr.fill();
-}
-
-/// Draw brand mark
-fn draw_brand_mark(cr: &gtk4::cairo::Context, w: f64, h: f64) {
-    let pts: [(f64, f64); 10] = [
-        (0.12 * w, 0.0),
-        (0.37 * w, 0.25 * h),
-        (0.50 * w, 0.0),
-        (0.63 * w, 0.24 * h),
-        (0.88 * w, 0.0),
-        (0.88 * w, 0.56 * h),
-        (0.63 * w, h),
-        (0.50 * w, 0.74 * h),
-        (0.37 * w, h),
-        (0.12 * w, 0.56 * h),
-    ];
-    cr.move_to(pts[0].0, pts[0].1);
-    for &(x, y) in &pts[1..] {
-        cr.line_to(x, y);
-    }
-    cr.close_path();
-    let grad = gtk4::cairo::LinearGradient::new(0.0, 0.0, 0.0, h);
-    grad.add_color_stop_rgb(0.0, 0.68, 0.70, 0.75);
-    grad.add_color_stop_rgb(1.0, 0.36, 0.40, 0.45);
-    cr.set_source(&grad).unwrap();
-    let _ = cr.fill();
 }
 
 fn build_settings_page(_app: &adw::Application) -> gtk::ScrolledWindow {
